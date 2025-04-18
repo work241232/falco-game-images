@@ -32,7 +32,7 @@ jobs:
         id: checkout
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}  # Usa PAT_TOKEN se disponibile, altrimenti fallback su GITHUB_TOKEN
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         continue-on-error: true
       
       - name: Check checkout
@@ -61,57 +61,53 @@ jobs:
             });
         continue-on-error: true
       
-      - name: Set up Node.js
-        if: steps.checkout.outcome == 'success'
-        uses: actions/setup-node@v3
-        with:
-          node-version: 16
-      
       - name: Extract image information
         if: steps.checkout.outcome == 'success'
         id: extract
+        shell: bash
         run: |
-          ISSUE_BODY="${{ github.event.issue.body }}"
+          # Usa una variabile temporanea per il corpo dell'issue
+          BODY="${{ github.event.issue.body }}"
+          echo "Issue body: $BODY"
           
-          # Estrai URL dell'immagine
-          IMAGE_URL=$(echo "$ISSUE_BODY" | grep -oP 'Image URL: \K(http[s]?:\/\/[^\s]+)' || echo "")
+          # Verifica se l'URL dell'immagine è nel formato corretto con regex più sicuro
+          IMAGE_URL=$(echo "$BODY" | grep -o 'Image URL: http[s]*://[^ ]*' | sed 's/Image URL: //')
+          echo "Extracted image URL: $IMAGE_URL"
           
-          # Estrai nome del file di destinazione
-          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: `\K([^`]+)' || echo "")
-          # Rimuovi backtick se è ancora presente
-          TARGET_FILENAME="${TARGET_FILENAME//\`/}"
+          # Estrai nome del file evitando esecuzione di comandi
+          TARGET_FILENAME=$(echo "$BODY" | grep -o 'Target filename: `[^`]*`' | sed 's/Target filename: `//' | sed 's/`//')
+          echo "Target filename from issue: $TARGET_FILENAME"
           
           # Se target filename non è stato trovato, estrai il nome del gioco e sanitizzalo
           if [ -z "$TARGET_FILENAME" ]; then
-            GAME_NAME=$(echo "$ISSUE_BODY" | grep -oP 'Game: \K([^\n]+)' || echo "")
+            GAME_NAME=$(echo "$BODY" | grep -o 'Game: [^\n]*' | sed 's/Game: //')
+            echo "Game name: $GAME_NAME"
+            
             if [ -n "$GAME_NAME" ]; then
-              TARGET_FILENAME="$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g').jpg"
+              # Sanitizza il nome del gioco per il nome file in modo sicuro
+              SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+              TARGET_FILENAME="${SANITIZED_NAME}.jpg"
+              echo "Generated target filename: $TARGET_FILENAME"
             fi
           fi
           
-          # Verifica che le variabili non siano vuote e gestiscile in modo sicuro
+          # Salva i risultati in output variables usando sintassi moderna
           if [ -n "$IMAGE_URL" ]; then
-            echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
-            echo "Extracted image URL: $IMAGE_URL"
+            echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
           else
-            echo "image_url=" >> "$GITHUB_OUTPUT"
-            echo "No image URL found"
+            echo "image_url=" >> $GITHUB_OUTPUT
           fi
           
           if [ -n "$TARGET_FILENAME" ]; then
-            echo "target_filename=$TARGET_FILENAME" >> "$GITHUB_OUTPUT"
-            echo "Target filename: $TARGET_FILENAME"
+            echo "target_filename=$TARGET_FILENAME" >> $GITHUB_OUTPUT
           else
-            echo "target_filename=" >> "$GITHUB_OUTPUT"
-            echo "No target filename found"
+            echo "target_filename=" >> $GITHUB_OUTPUT
           fi
           
           if [ -n "$GAME_NAME" ]; then
-            echo "game_name=$GAME_NAME" >> "$GITHUB_OUTPUT"
-            echo "Game name: $GAME_NAME"
+            echo "game_name=$GAME_NAME" >> $GITHUB_OUTPUT
           else
-            echo "game_name=" >> "$GITHUB_OUTPUT"
-            echo "No game name found"
+            echo "game_name=" >> $GITHUB_OUTPUT
           fi
       
       - name: Validate extraction
