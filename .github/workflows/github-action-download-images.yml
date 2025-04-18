@@ -4,6 +4,10 @@ on:
   issues:
     types: [opened, edited, labeled]
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   download-image:
     runs-on: ubuntu-latest
@@ -14,7 +18,8 @@ jobs:
         id: checkout
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false # Importante: non persistere le credenziali predefinite
+          fetch-depth: 0
       
       - name: Extract image information
         id: extract
@@ -67,11 +72,14 @@ jobs:
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
         id: commit
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           FILENAME="${{ steps.extract.outputs.target_filename }}"
           git add "images/$FILENAME" || echo "No changes to commit"
           git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}" || echo "No changes to commit"
+          
+          # Utilizzo di un token di deploy con permessi di scrittura
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}
           git push || echo "Nothing to push"
           echo "success=true" >> "$GITHUB_OUTPUT"
       
