@@ -20,38 +20,43 @@ jobs:
         id: extract
         shell: bash
         run: |
-          # Memorizza il corpo dell'issue in un file temporaneo per un'elaborazione più sicura
-          echo '${{ github.event.issue.body }}' > issue_body.txt
+          echo "Attempting to extract information from issue body:"
+          echo "${{ github.event.issue.body }}"
+          echo "-------------------------------------"
           
-          # Usa grep per estrarre i dati in modo sicuro
-          IMAGE_URL=""
-          if grep -q "Image URL:" issue_body.txt; then
-            IMAGE_URL=$(grep "Image URL:" issue_body.txt | sed 's/Image URL: //')
-          fi
-          echo "Image URL: $IMAGE_URL"
+          # Extract Image URL using grep and sed
+          IMAGE_URL=$(echo "${{ github.event.issue.body }}" | grep "Image URL:" | sed 's/Image URL: //' | head -n 1)
+          echo "Extracted Image URL: $IMAGE_URL"
           
-          TARGET_FILENAME=""
-          if grep -q "Target filename:" issue_body.txt; then
-            TARGET_FILENAME=$(grep "Target filename:" issue_body.txt | sed 's/Target filename: `//' | sed 's/`//')
-          fi
-          echo "Target filename: $TARGET_FILENAME"
+          # Extract Target Filename using grep and sed
+          TARGET_FILENAME=$(echo "${{ github.event.issue.body }}" | grep "Target filename:" | sed -e 's/Target filename: `//' -e 's/`//' | head -n 1)
+          echo "Extracted Target filename: $TARGET_FILENAME"
           
-          GAME_NAME=""
-          if [ -z "$TARGET_FILENAME" ] && grep -q "Game:" issue_body.txt; then
-            GAME_NAME=$(grep "Game:" issue_body.txt | sed 's/Game: //')
-            echo "Game name: $GAME_NAME"
-            
-            if [ -n "$GAME_NAME" ]; then
-              SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
-              TARGET_FILENAME="${SANITIZED_NAME}.jpg"
-              echo "Generated target filename: $TARGET_FILENAME"
-            fi
+          # Extract Game Name (only needed if filename wasn't explicitly provided)
+          GAME_NAME=$(echo "${{ github.event.issue.body }}" | grep "Game:" | sed 's/Game: //' | head -n 1)
+          echo "Extracted Game name: $GAME_NAME"
+          
+          # Fallback: Generate filename from game name if not found
+          if [ -z "$TARGET_FILENAME" ] && [ -n "$GAME_NAME" ]; then
+            echo "Target filename not found, generating from game name..."
+            SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+            TARGET_FILENAME="${SANITIZED_NAME}.jpg"
+            echo "Generated target filename: $TARGET_FILENAME"
           fi
           
-          # Salva i risultati usando la nuova sintassi di GitHub Actions
+          # Validate extracted data
+          if [ -z "$IMAGE_URL" ] || [ -z "$TARGET_FILENAME" ]; then
+            echo "::error::Could not extract required IMAGE_URL or TARGET_FILENAME from the issue body. Please check the issue format."
+            echo "Issue Body Content Was:"
+            echo "${{ github.event.issue.body }}"
+            exit 1 # Fail the step
+          fi
+          
+          # Save the results to GitHub Actions outputs
           echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
           echo "target_filename=$TARGET_FILENAME" >> "$GITHUB_OUTPUT"
           echo "game_name=$GAME_NAME" >> "$GITHUB_OUTPUT"
+          echo "Extraction successful."
       
       - name: Download image
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
