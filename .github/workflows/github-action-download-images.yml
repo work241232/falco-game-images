@@ -2,23 +2,71 @@ name: Auto Download Game Images
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, labeled]
 
 jobs:
   download-image:
     runs-on: ubuntu-latest
-    if: contains(github.event.issue.labels.*.name, 'image-request')
+    if: contains(github.event.issue.labels.*.name, 'image-request') && !contains(github.event.issue.labels.*.name, 'completed') && !contains(github.event.issue.labels.*.name, 'processing')
     
     steps:
+      - name: Add processing label
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['processing']
+            });
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🔄 Processing image download request...'
+            });
+      
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@v3
+        continue-on-error: true
+      
+      - name: Check checkout
+        if: steps.checkout.outcome != 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Failed to checkout repository. Manual intervention required.'
+            });
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['needs-manual-intervention']
+            });
+            github.rest.issues.removeLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: ['processing']
+            });
+        continue-on-error: true
       
       - name: Set up Node.js
+        if: steps.checkout.outcome == 'success'
         uses: actions/setup-node@v3
         with:
           node-version: 16
       
       - name: Extract image information
+        if: steps.checkout.outcome == 'success'
         id: extract
         run: |
           ISSUE_BODY="${{ github.event.issue.body }}"
@@ -27,7 +75,9 @@ jobs:
           IMAGE_URL=$(echo "$ISSUE_BODY" | grep -oP 'Image URL: \K(http[s]?:\/\/[^\s]+)' || echo "")
           
           # Estrai nome del file di destinazione
-          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: `\K([^`]+)' || echo "")
+          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: \K([^\s]+)' || echo "")
+          # Rimuovi backtick se presente
+          TARGET_FILENAME=$(echo "$TARGET_FILENAME" | sed 's/`//g')
           
           # Se target filename non è stato trovato, estrai il nome del gioco e sanitizzalo
           if [ -z "$TARGET_FILENAME" ]; then
@@ -45,25 +95,26 @@ jobs:
           echo "Target filename: $TARGET_FILENAME"
           echo "Game name: $GAME_NAME"
       
-      - name: Download image
-        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+      - name: Validate extraction
+        if: steps.checkout.outcome == 'success'
+        id: validate
         run: |
-          mkdir -p images
-          curl -L "${{ steps.extract.outputs.image_url }}" -o "images/${{ steps.extract.outputs.target_filename }}"
-          echo "Image downloaded to images/${{ steps.extract.outputs.target_filename }}"
-          ls -la images/
+          if [ -z "${{ steps.extract.outputs.image_url }}" ]; then
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "reason=No image URL found in issue body" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          if [ -z "${{ steps.extract.outputs.target_filename }}" ]; then
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "reason=No target filename could be determined" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "valid=true" >> $GITHUB_OUTPUT
       
-      - name: Commit and push changes
-        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add images/${{ steps.extract.outputs.target_filename }}
-          git commit -m "Add image for ${{ steps.extract.outputs.game_name }}"
-          git push
-      
-      - name: Comment on issue
-        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+      - name: Report invalid extraction
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid != 'true'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -72,7 +123,111 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Image has been automatically downloaded and added to the repository as `images/${{ steps.extract.outputs.target_filename }}`.'
+              body: `❌ Could not process image request: ${{ steps.validate.outputs.reason }}. Please check the issue format.`
+            });
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['needs-manual-intervention']
+            });
+            github.rest.issues.removeLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: ['processing']
+            });
+      
+      - name: Download image
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid == 'true'
+        id: download
+        run: |
+          mkdir -p images
+          HTTP_CODE=$(curl -L "${{ steps.extract.outputs.image_url }}" -o "images/${{ steps.extract.outputs.target_filename }}" -w "%{http_code}")
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          
+          if [ "$HTTP_CODE" == "200" ]; then
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "Image downloaded to images/${{ steps.extract.outputs.target_filename }}"
+            ls -la images/
+          else
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "Failed to download image, HTTP code: $HTTP_CODE"
+          fi
+      
+      - name: Report download failure
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid == 'true' && steps.download.outputs.success != 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ Failed to download image from URL. HTTP Status: ${{ steps.download.outputs.http_code }}. Manual intervention required.`
+            });
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['needs-manual-intervention']
+            });
+            github.rest.issues.removeLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: ['processing']
+            });
+      
+      - name: Commit and push changes
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid == 'true' && steps.download.outputs.success == 'true'
+        id: commit
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add images/${{ steps.extract.outputs.target_filename }}
+          git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
+          git push
+          echo "success=true" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      
+      - name: Report commit failure
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid == 'true' && steps.download.outputs.success == 'true' && steps.commit.outcome != 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ Failed to commit the image to repository. Manual intervention required.`
+            });
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['needs-manual-intervention']
+            });
+            github.rest.issues.removeLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: ['processing']
+            });
+      
+      - name: Complete successfully
+        if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid == 'true' && steps.download.outputs.success == 'true' && steps.commit.outcome == 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Image has been successfully downloaded and added to the repository as `images/${{ steps.extract.outputs.target_filename }}`.'
             });
             github.rest.issues.update({
               issue_number: context.issue.number,
@@ -81,22 +236,9 @@ jobs:
               state: 'closed',
               labels: ['image-request', 'automated', 'completed']
             });
-      
-      - name: Comment on error
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
+            github.rest.issues.removeLabels({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ Failed to automatically download and add the image. Manual intervention required.'
-            });
-            github.rest.issues.addLabels({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              labels: ['needs-manual-intervention']
+              name: ['processing']
             });
