@@ -2,16 +2,22 @@ name: Auto Download Game Images
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, labeled] # Trigger on opened or labeled
 
 jobs:
   download-image:
     runs-on: ubuntu-latest
-    # Add concurrency control: only one run of this job at a time, cancel older runs
     concurrency: 
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
-    if: github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'image-request') && !contains(github.event.issue.labels.*.name, 'completed')
+    # Updated condition to handle 'opened' and 'labeled' events specifically for 'image-request'
+    if: >
+      github.event.issue.state == 'open' &&
+      !contains(github.event.issue.labels.*.name, 'completed') &&
+      (
+        (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'image-request')) ||
+        (github.event.action == 'labeled' && github.event.label.name == 'image-request')
+      )
     
     steps:
       - name: Checkout repository
