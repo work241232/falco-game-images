@@ -40,23 +40,36 @@ jobs:
           
           # Extract Target Filename using grep and sed
           TARGET_FILENAME=$(echo "${{ github.event.issue.body }}" | grep "Target filename:" | sed -e 's/Target filename: `//' -e 's/`//' | head -n 1)
-          echo "Extracted Target filename: $TARGET_FILENAME"
+          echo "Extracted Target filename (raw): $TARGET_FILENAME"
           
           # Extract Game Name (only needed if filename wasn't explicitly provided)
           GAME_NAME=$(echo "${{ github.event.issue.body }}" | grep "Game:" | sed 's/Game: //' | head -n 1)
           echo "Extracted Game name: $GAME_NAME"
           
-          # Fallback: Generate filename from game name if not found
-          if [ -z "$TARGET_FILENAME" ] && [ -n "$GAME_NAME" ]; then
-            echo "Target filename not found, generating from game name..."
-            SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
-            TARGET_FILENAME="${SANITIZED_NAME}.jpg"
-            echo "Generated target filename: $TARGET_FILENAME"
+          # Generate filename from game name if not found OR sanitize explicit filename
+          if [ -z "$TARGET_FILENAME" ]; then
+            if [ -n "$GAME_NAME" ]; then
+              echo "Target filename not found, generating from game name..."
+              SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9._-]/_/g' -e 's/__*/_/g') # Allow ., _,-
+              TARGET_FILENAME="${SANITIZED_NAME}.jpg" # Assuming jpg, adjust if needed
+              echo "Generated target filename: $TARGET_FILENAME"
+            fi
+          else
+             echo "Sanitizing explicit target filename..."
+             # Sanitize the explicitly provided filename
+             SANITIZED_FILENAME=$(echo "$TARGET_FILENAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9._-]/_/g' -e 's/__*/_/g') # Allow ., _,-
+             # Ensure it has a common image extension if missing (optional, based on needs)
+             if [[ ! "$SANITIZED_FILENAME" =~ \.(jpg|jpeg|png|webp|gif)$ ]]; then
+               echo "Warning: Sanitized filename '$SANITIZED_FILENAME' lacks a common image extension. Appending .jpg"
+               SANITIZED_FILENAME="${SANITIZED_FILENAME}.jpg"
+             fi
+             TARGET_FILENAME="$SANITIZED_FILENAME"
+             echo "Sanitized target filename: $TARGET_FILENAME"
           fi
           
-          # Validate extracted data
+          # Validate extracted/generated data
           if [ -z "$IMAGE_URL" ] || [ -z "$TARGET_FILENAME" ]; then
-            echo "::error::Could not extract required IMAGE_URL or TARGET_FILENAME from the issue body. Please check the issue format."
+            echo "::error::Could not extract required IMAGE_URL or determine a valid TARGET_FILENAME from the issue body. Please check the issue format."
             echo "Issue Body Content Was:"
             echo "${{ github.event.issue.body }}"
             exit 1 # Fail the step
@@ -84,22 +97,34 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          # Configure pull strategy to merge (no rebase)
-          git config pull.rebase false 
+          git config pull.rebase false # Ensure merge strategy
+
           FILENAME="${{ steps.extract.outputs.target_filename }}"
+          GAME_NAME_OR_FILENAME="${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
+
+          # Pull latest changes FIRST
+          echo "Pulling latest changes from origin/${{ github.ref_name }}..."
+          git pull origin ${{ github.ref_name }}
+          echo "Pull complete."
+
+          # Now check if file exists and add/commit
           if [ -f "images/$FILENAME" ]; then
+            echo "Adding file: images/$FILENAME"
             git add "images/$FILENAME"
+            # Check if there are changes staged for commit
             if ! git diff --staged --quiet; then
-              git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
-              # Pull latest changes before pushing, using the configured merge strategy
-              git pull origin ${{ github.ref_name }} 
-              git push
+              echo "Committing changes..."
+              git commit -m "Add image: $FILENAME (for $GAME_NAME_OR_FILENAME)"
+              echo "Pushing changes..."
+              git push origin ${{ github.ref_name }}
               echo "Changes committed and pushed."
             else
-              echo "No changes to commit."
+              echo "File images/$FILENAME already exists and is up-to-date. No changes to commit."
             fi
           else
-             echo "Downloaded file images/$FILENAME not found. Skipping commit."
+             echo "Downloaded file images/$FILENAME not found after pull. Skipping commit."
+             # Optionally, fail the step if the file should definitely exist
+             # exit 1
           fi
           echo "success=true" >> "$GITHUB_OUTPUT"
       
