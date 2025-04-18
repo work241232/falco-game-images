@@ -115,17 +115,21 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           # Imposta il token per authentication
-          # Nota: Utilizziamo una variabile temporanea per evitare problemi di escape
           REPO_URL="https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}"
           git remote set-url origin "$REPO_URL"
           
-          # Prima di fare il commit, dobbiamo fare pull per incorporare eventuali modifiche remote
-          echo "Pulling latest changes from the repository..."
-          git pull origin main --rebase
+          # Verifica se il file esiste già nel repository remoto
+          echo "Checking if the file already exists in the repository..."
+          git ls-remote --heads origin main > /dev/null
+          if [ $? -ne 0 ]; then
+            echo "Failed to check remote repository. Check your token permissions."
+            exit 1
+          fi
           
-          # Debug git status dopo pull
-          echo "Git status after pull:"
-          git status
+          # Crea un branch temporaneo univoco per questa specifica immagine
+          BRANCH_NAME="image-upload-${FILENAME}-$(date +%s)"
+          echo "Creating temporary branch: $BRANCH_NAME"
+          git checkout -b "$BRANCH_NAME"
           
           # Aggiungi il file
           git add "images/$FILENAME"
@@ -141,32 +145,79 @@ jobs:
           echo "Latest commit:"
           git log -1
           
-          # Esegui il push
-          echo "Pushing changes..."
-          git push origin HEAD:main
+          # Esegui il push del branch temporaneo
+          echo "Pushing to temporary branch $BRANCH_NAME..."
+          git push origin "$BRANCH_NAME"
           
           # Verifica il risultato del push
           PUSH_RESULT=$?
-          if [ $PUSH_RESULT -eq 0 ]; then
-            echo "Push successful!"
-            echo "success=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Push failed with error code: $PUSH_RESULT"
-            echo "Trying with force push as a fallback..."
+          if [ $PUSH_RESULT -ne 0 ]; then
+            echo "Failed to push to temporary branch. Exiting."
+            exit 1
+          fi
+          
+          # Crea una pull request tramite GitHub API
+          echo "Creating a pull request to merge the image..."
+          PR_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/pulls \
+            -d '{
+              "title": "Add image: '"$FILENAME"'",
+              "head": "'"$BRANCH_NAME"'",
+              "base": "main",
+              "body": "Automatically created PR to add image for '"$FILENAME"'",
+              "maintainer_can_modify": true
+            }')
+          
+          # Estrai l'ID della PR
+          PR_NUMBER=$(echo "$PR_RESPONSE" | grep -o '"number": [0-9]*' | cut -d' ' -f2 || echo "")
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Failed to create pull request or extract PR number. Check the API response:"
+            echo "$PR_RESPONSE"
+            echo "Trying direct merge as a fallback..."
             
-            # Tenta un force push come fallback (da utilizzare con cautela)
+            # Tenta di fare checkout e merge sul main come fallback
+            git fetch origin main
+            git checkout main
+            git reset --hard origin/main
+            git checkout -b "direct-upload-$BRANCH_NAME"
+            git add "images/$FILENAME"
+            git commit -m "Direct add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
             git push origin HEAD:main --force
             
-            # Verifica il risultato del force push
-            FORCE_PUSH_RESULT=$?
-            if [ $FORCE_PUSH_RESULT -eq 0 ]; then
-              echo "Force push successful!"
+            if [ $? -eq 0 ]; then
+              echo "Direct push successful!"
               echo "success=true" >> "$GITHUB_OUTPUT"
+              exit 0
             else
-              echo "Force push also failed with error code: $FORCE_PUSH_RESULT"
-              echo "Please check repository permissions and token validity."
+              echo "Both PR creation and direct push failed. Manual intervention required."
               exit 1
             fi
+          fi
+          
+          # Merge immediato della PR
+          echo "Merging pull request #$PR_NUMBER..."
+          MERGE_RESPONSE=$(curl -s -X PUT \
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/merge" \
+            -d '{
+              "commit_title": "Merge: Add image '"$FILENAME"'", 
+              "commit_message": "Automatically merging image upload", 
+              "merge_method": "squash"
+            }')
+          
+          # Verifica se il merge ha avuto successo
+          if echo "$MERGE_RESPONSE" | grep -q '"merged": true'; then
+            echo "Pull request #$PR_NUMBER merged successfully!"
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Failed to merge pull request. Response:"
+            echo "$MERGE_RESPONSE"
+            echo "Manual merge required for PR #$PR_NUMBER"
+            exit 1
+          fi
       
       - name: Comment on issue
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != '' && steps.download.outputs.success == 'true'
