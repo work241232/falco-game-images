@@ -13,6 +13,9 @@ on:
         options:
           - 'true'
           - 'false'
+  schedule:
+    # Esegui automaticamente ogni 6 ore per processare eventuali issue in sospeso
+    - cron: '0 */6 * * *'
 
 jobs:
   # Job per identificare le issue da processare
@@ -22,12 +25,28 @@ jobs:
       issue_ids: ${{ steps.find-issues.outputs.issue_ids }}
       has_issues: ${{ steps.find-issues.outputs.has_issues }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Find pending image requests
         id: find-issues
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require('fs');
+
+            // Carica il registry se esiste
+            let registry = { requestedImages: {} };
+            if (fs.existsSync('./registry.json')) {
+              try {
+                registry = JSON.parse(fs.readFileSync('./registry.json', 'utf8'));
+                console.log(`Loaded existing registry with ${Object.keys(registry.requestedImages || {}).length} entries`);
+              } catch (error) {
+                console.error('Error loading registry:', error);
+              }
+            }
+            
             // Cerca tutte le issue aperte con etichetta 'image-request' ma senza 'completed'
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -37,11 +56,70 @@ jobs:
             });
             
             // Filtra le issue che non hanno 'completed' come etichetta
-            const pendingIssues = issues.data.filter(issue => 
+            let pendingIssues = issues.data.filter(issue => 
               !issue.labels.some(label => label.name === 'completed')
             );
             
-            console.log(`Found ${pendingIssues.length} pending image requests`);
+            console.log(`Found ${pendingIssues.length} pending image requests initially`);
+            
+            // Filtra ulteriormente in base al registry
+            const filteredIssues = [];
+            for (const issue of pendingIssues) {
+              const body = issue.body || '';
+              
+              // Estrai nome file target o nome del gioco
+              let gameKey = null;
+              const filenameMatch = body.match(/Target filename:\s*`([^`]+)`/);
+              if (filenameMatch) {
+                const filename = filenameMatch[1].trim();
+                gameKey = filename.replace(/\.(jpg|jpeg|png|webp|gif)$/i, '').toLowerCase();
+              } else {
+                const gameMatch = body.match(/Game:\s*(.+?)(?:$|\n)/);
+                if (gameMatch) {
+                  const gameName = gameMatch[1].trim();
+                  gameKey = gameName.toLowerCase().replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_');
+                  
+                  // Aggiungi publisher se disponibile
+                  const publisherMatch = body.match(/Publisher:\s*(.+?)(?:$|\n)/);
+                  if (publisherMatch) {
+                    const publisher = publisherMatch[1].trim();
+                    const sanitizedPublisher = publisher.toLowerCase().replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_');
+                    gameKey = `${gameKey}_${sanitizedPublisher}`;
+                  }
+                }
+              }
+              
+              // Se non è registrato o è registrato ma non ancora completato, aggiungilo
+              if (gameKey) {
+                const registryEntry = registry.requestedImages[gameKey];
+                if (!registryEntry || registryEntry.status !== 'completed') {
+                  filteredIssues.push(issue);
+                  console.log(`Adding issue #${issue.number} for processing (key: ${gameKey})`);
+                } else {
+                  console.log(`Skipping issue #${issue.number}, already in registry as completed (key: ${gameKey})`);
+                  // Aggiorna l'issue se è già completata ma è ancora aperta
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    state: 'closed',
+                    labels: [...new Set([...issue.labels.map(l => l.name), 'completed', 'automated'])]
+                  });
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: `⚠️ L'immagine richiesta risulta già elaborata nel registro centrale. Chiudo automaticamente questa issue.`
+                  });
+                }
+              } else {
+                filteredIssues.push(issue); // Se non riusciamo a determinare la chiave, includiamola comunque
+                console.log(`Adding issue #${issue.number} for processing (no key identified)`);
+              }
+            }
+            
+            pendingIssues = filteredIssues;
+            console.log(`After registry filtering: ${pendingIssues.length} pending image requests`);
             
             // Se nessuna issue è in attesa, termina
             if (pendingIssues.length === 0) {
@@ -63,6 +141,8 @@ jobs:
     needs: identify-issues
     if: needs.identify-issues.outputs.has_issues == 'true'
     runs-on: ubuntu-latest
+    # Imposta un timeout più lungo per processi batch
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -82,13 +162,29 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require('fs');
             const issues = JSON.parse('${{ needs.identify-issues.outputs.issue_ids }}');
             console.log(`Processing ${issues.length} image requests in sequence`);
             
             // Crea directory images se non esiste
-            const fs = require('fs');
             if (!fs.existsSync('./images')) {
               fs.mkdirSync('./images');
+            }
+
+            // Carica il registry se esiste
+            let registry = {
+              version: 1,
+              lastUpdated: new Date().toISOString().split('T')[0],
+              requestedImages: {}
+            };
+
+            if (fs.existsSync('./registry.json')) {
+              try {
+                registry = JSON.parse(fs.readFileSync('./registry.json', 'utf8'));
+                registry.lastUpdated = new Date().toISOString().split('T')[0];
+              } catch (error) {
+                console.error('Error loading registry:', error);
+              }
             }
             
             // Processa ogni issue in sequenza
@@ -120,28 +216,42 @@ jobs:
                 
                 // Estrai nome file target
                 let targetFilename = '';
+                let gameName = '';
+                let publisher = '';
+                let registryKey = '';
+
+                // Estrai nome gioco
+                const gameMatch = body.match(/Game:\s*(.+?)(?:$|\n)/);
+                if (gameMatch) {
+                  gameName = gameMatch[1].trim();
+                }
+
+                // Estrai publisher se disponibile
+                const publisherMatch = body.match(/Publisher:\s*(.+?)(?:$|\n)/);
+                if (publisherMatch) {
+                  publisher = publisherMatch[1].trim();
+                }
+
                 const filenameMatch = body.match(/Target filename:\s*`([^`]+)`/);
                 if (filenameMatch) {
                   targetFilename = filenameMatch[1].trim();
+                  registryKey = targetFilename.replace(/\.(jpg|jpeg|png|webp|gif)$/i, '').toLowerCase();
                 } else {
-                  // Estrai nome del gioco
-                  const gameMatch = body.match(/Game:\s*(.+?)(?:$|\n)/);
-                  if (!gameMatch) {
+                  if (!gameName) {
                     console.log(`No game name or target filename found in issue #${issueId}`);
                     await addCommentAndLabel(issueId, '❌ Failed to extract game name or target filename from issue body', ['needs-manual-intervention']);
                     continue;
                   }
                   
                   // Genera nome file dal nome del gioco
-                  const gameName = gameMatch[1].trim();
                   targetFilename = gameName.toLowerCase().replace(/[^a-z0-9._-]/gi, '_').replace(/_+/g, '_');
+                  registryKey = targetFilename;
                   
-                  // Estrai publisher se disponibile
-                  const publisherMatch = body.match(/Publisher:\s*(.+?)(?:$|\n)/);
-                  if (publisherMatch) {
-                    const publisher = publisherMatch[1].trim();
+                  // Estrai publisher se disponibile e aggiungilo al nome file
+                  if (publisher) {
                     const sanitizedPublisher = publisher.toLowerCase().replace(/[^a-z0-9._-]/gi, '_').replace(/_+/g, '_');
                     targetFilename = `${targetFilename}_${sanitizedPublisher}`;
+                    registryKey = targetFilename;
                   }
                   
                   // Aggiungi estensione
@@ -155,14 +265,40 @@ jobs:
                   .replace(/[^a-z0-9._-]/gi, '_')
                   .replace(/_+/g, '_');
                 
+                console.log(`Registry key: ${registryKey}`);
                 console.log(`Image URL: ${imageUrl}`);
                 console.log(`Target filename: ${sanitizedFilename}`);
                 
-                // Percorso completo del file
-                const filePath = `images/${sanitizedFilename}`;
+                // Controlla se è già registrato come completato
+                if (registry.requestedImages[registryKey] && registry.requestedImages[registryKey].status === 'completed') {
+                  console.log(`Image ${registryKey} already completed according to registry`);
+                  await addCommentAndLabel(issueId, `✅ L'immagine risulta già elaborata nel registro. Chiudo questa issue.`, ['completed', 'automated']);
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueId,
+                    state: 'closed'
+                  });
+                  continue;
+                }
+                
+                // Registra nel registry come 'processing'
+                registry.requestedImages[registryKey] = {
+                  requestedAt: new Date().toISOString().split('T')[0],
+                  status: 'processing',
+                  filename: sanitizedFilename
+                };
+                fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
                 
                 // Fai un pull prima di qualsiasi modifica
-                await exec.exec('git', ['pull', '--no-rebase']);
+                try {
+                  await exec.exec('git', ['pull', '--no-rebase']);
+                } catch (error) {
+                  console.log('Warning: Git pull failed, continuing anyway:', error.message);
+                }
+                
+                // Percorso completo del file
+                const filePath = `images/${sanitizedFilename}`;
                 
                 // Scarica l'immagine
                 console.log(`Downloading image to ${filePath}...`);
@@ -172,6 +308,9 @@ jobs:
                 if (!fs.existsSync(filePath)) {
                   console.log(`Download failed for issue #${issueId}`);
                   await addCommentAndLabel(issueId, '❌ Failed to download image', ['needs-manual-intervention']);
+                  // Aggiorna registro
+                  registry.requestedImages[registryKey].status = 'failed';
+                  fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
                   continue;
                 }
                 
@@ -180,36 +319,78 @@ jobs:
                 if (fileStats.size < 100) {
                   console.log(`Downloaded file appears to be too small (${fileStats.size} bytes)`);
                   await addCommentAndLabel(issueId, '❌ Downloaded file appears to be too small or not a valid image', ['needs-manual-intervention']);
+                  // Aggiorna registro
+                  registry.requestedImages[registryKey].status = 'failed';
+                  fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
                   continue;
                 }
                 
                 // Aggiungi e committa il file
                 await exec.exec('git', ['add', filePath]);
+                await exec.exec('git', ['add', 'registry.json']);
                 
                 // Verifica se ci sono modifiche da committare
                 const { exitCode } = await exec.getExecOutput('git', ['diff', '--staged', '--quiet'], { ignoreReturnCode: true });
                 if (exitCode === 0) {
                   console.log('No changes to commit, file may already exist with same content');
                   await addCommentAndLabel(issueId, '✅ Image with identical content was already present in the repository', ['completed', 'automated']);
+                  // Aggiorna registro comunque
+                  registry.requestedImages[registryKey].status = 'completed';
+                  fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
+                  await exec.exec('git', ['add', 'registry.json']);
+                  await exec.exec('git', ['commit', '-m', `Update registry for ${sanitizedFilename}`]);
+                  
+                  try {
+                    await exec.exec('git', ['pull', '--no-rebase']);
+                    await exec.exec('git', ['push']);
+                  } catch (error) {
+                    console.error('Error pushing registry update:', error);
+                  }
                   continue;
                 }
                 
-                // Ottieni il nome del gioco dall'issue title o dal body
-                let gameName = issue.data.title.replace(/^Download image for: /i, '').trim();
-                const gameNameMatch = body.match(/Game:\s*(.+?)(?:$|\n)/);
-                if (gameNameMatch) {
-                  gameName = gameNameMatch[1].trim();
-                }
-                
                 // Fai commit
-                await exec.exec('git', ['commit', '-m', `Add image: ${sanitizedFilename} (from issue #${issueId})`]);
+                const commitMsg = `Add image: ${sanitizedFilename} (from issue #${issueId})`;
+                await exec.exec('git', ['commit', '-m', commitMsg]);
                 
                 // Pull nuovamente in caso di modifiche nel frattempo
-                await exec.exec('git', ['pull', '--no-rebase']);
+                try {
+                  await exec.exec('git', ['pull', '--no-rebase']);
+                } catch (error) {
+                  console.log('Warning: Git pull before push failed:', error.message);
+                }
                 
                 // Push
                 console.log('Pushing changes...');
-                await exec.exec('git', ['push']);
+                try {
+                  await exec.exec('git', ['push']);
+                } catch (pushError) {
+                  console.error('Error pushing changes:', pushError);
+                  // Riprova una volta con force-push se necessario
+                  try {
+                    console.log('Trying alternative push strategy...');
+                    // Pull again with different strategy
+                    await exec.exec('git', ['fetch', 'origin']);
+                    await exec.exec('git', ['reset', '--hard', 'origin/main']);
+                    // Ripeti il processo di download
+                    await exec.exec('curl', ['-L', '-o', filePath, imageUrl]);
+                    await exec.exec('git', ['add', filePath]);
+                    // Aggiorna registro
+                    registry.requestedImages[registryKey].status = 'completed';
+                    fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
+                    await exec.exec('git', ['add', 'registry.json']);
+                    await exec.exec('git', ['commit', '-m', commitMsg]);
+                    await exec.exec('git', ['push']);
+                  } catch (retryError) {
+                    console.error('Final attempt to push changes failed:', retryError);
+                    await addCommentAndLabel(issueId, `❌ Failed to commit and push the image due to Git errors. Please process manually.`, ['needs-manual-intervention']);
+                    continue;
+                  }
+                }
+                
+                // Aggiorna il registro come completato
+                registry.requestedImages[registryKey].status = 'completed';
+                fs.writeFileSync('./registry.json', JSON.stringify(registry, null, 2));
                 
                 // Commenta sull'issue e chiudila
                 console.log(`Successfully processed issue #${issueId}`);

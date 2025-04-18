@@ -1,8 +1,51 @@
 {
-  "lastUpdate": "2025-04-18T10:10:16Z",
-  "images": {
-    "Game: Test Game": "/images/game__test_game.jpg",
-    "Split Fiction": "/images/split_fiction.jpg",
-    "FC 25": "/images/fc_25.jpg"
+  "version": 1,
+  "lastUpdated": "2023-04-18",
+  "requestedImages": {
+    "starfield": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "starfield.jpg"
+    },
+    "fifa_23_ea_games": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "fifa_23_ea_games.jpg"
+    },
+    "dynasty_warriors_origins_8": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "dynasty_warriors_origins_8.jpg"
+    },
+    "assassin_s_creed_mirage": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "assassin_s_creed_mirage.jpg"
+    },
+    "kingdom_come_deliverance_2": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "kingdom_come_deliverance_2.jpg"
+    },
+    "r_type_two": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "r_type_two.jpg"
+    },
+    "mouthwashing": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "mouthwashing.jpg"
+    },
+    "yakuza_infinite_wealth": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "yakuza_infinite_wealth.jpg"
+    },
+    "indiana_jones_x_aktion_direkta": {
+      "requestedAt": "2023-04-18",
+      "status": "completed",
+      "filename": "indiana_jones_x_aktion_direkta.jpg"
+    }
   }
 }
