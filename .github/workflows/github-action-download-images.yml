@@ -7,6 +7,10 @@ on:
 jobs:
   download-image:
     runs-on: ubuntu-latest
+    # Add concurrency control: only one run of this job at a time, cancel older runs
+    concurrency: 
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     if: github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'image-request') && !contains(github.event.issue.labels.*.name, 'completed')
     
     steps:
@@ -74,12 +78,15 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          # Configure pull strategy to merge (no rebase)
+          git config pull.rebase false 
           FILENAME="${{ steps.extract.outputs.target_filename }}"
           if [ -f "images/$FILENAME" ]; then
             git add "images/$FILENAME"
             if ! git diff --staged --quiet; then
               git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
-              git pull # Pull latest changes before pushing
+              # Pull latest changes before pushing, using the configured merge strategy
+              git pull origin ${{ github.ref_name }} 
               git push
               echo "Changes committed and pushed."
             else
