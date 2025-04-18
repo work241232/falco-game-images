@@ -25,38 +25,61 @@ jobs:
         id: extract
         shell: bash
         run: |
-          # Memorizza il corpo dell'issue in un file temporaneo per un'elaborazione più sicura
+          # Scrivi il corpo dell'issue in un file per debug
+          echo "Corpo dell'issue:"
+          echo '${{ github.event.issue.body }}'
+          echo "-----------------------------------"
+          
+          # Memorizza il corpo dell'issue in un file temporaneo senza interpretazione
           echo '${{ github.event.issue.body }}' > issue_body.txt
           
-          # Usa grep per estrarre i dati in modo sicuro
-          IMAGE_URL=""
-          if grep -q "Image URL:" issue_body.txt; then
-            IMAGE_URL=$(grep "Image URL:" issue_body.txt | sed 's/Image URL: //')
-          fi
-          echo "Image URL: $IMAGE_URL"
+          # Extra debug
+          echo "Contenuto di issue_body.txt:"
+          cat issue_body.txt
+          echo "-----------------------------------"
           
+          # Usa comandi più sicuri per estrarre i dati
+          # Estrazione dell'URL dell'immagine
+          IMAGE_URL=$(grep -o 'Image URL: [^ ]*' issue_body.txt | cut -d' ' -f3- || echo "")
+          echo "URL dell'immagine estratto: ${IMAGE_URL}"
+          
+          # Estrazione del nome del file target
           TARGET_FILENAME=""
           if grep -q "Target filename:" issue_body.txt; then
-            TARGET_FILENAME=$(grep "Target filename:" issue_body.txt | sed 's/Target filename: `//' | sed 's/`//')
+            # Gestione speciale per estrarre il contenuto tra backticks
+            TARGET_LINE=$(grep "Target filename:" issue_body.txt)
+            # Cerca tutto dopo `Target filename: ` fino alla fine della riga
+            TARGET_FILENAME=$(echo "$TARGET_LINE" | sed -E 's/.*Target filename: `?([^`]*)`?.*/\1/')
+            echo "Nome file target estratto: ${TARGET_FILENAME}"
           fi
-          echo "Target filename: $TARGET_FILENAME"
           
+          # Estrazione del nome del gioco
           GAME_NAME=""
           if [ -z "$TARGET_FILENAME" ] && grep -q "Game:" issue_body.txt; then
-            GAME_NAME=$(grep "Game:" issue_body.txt | sed 's/Game: //')
-            echo "Game name: $GAME_NAME"
+            GAME_LINE=$(grep "Game:" issue_body.txt)
+            GAME_NAME=$(echo "$GAME_LINE" | sed -E 's/.*Game: (.*)/\1/')
+            echo "Nome del gioco estratto: ${GAME_NAME}"
             
             if [ -n "$GAME_NAME" ]; then
               SANITIZED_NAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
               TARGET_FILENAME="${SANITIZED_NAME}.jpg"
-              echo "Generated target filename: $TARGET_FILENAME"
+              echo "Nome file target generato: ${TARGET_FILENAME}"
             fi
           fi
           
-          # Salva i risultati usando la nuova sintassi di GitHub Actions
-          echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
-          echo "target_filename=$TARGET_FILENAME" >> "$GITHUB_OUTPUT"
-          echo "game_name=$GAME_NAME" >> "$GITHUB_OUTPUT"
+          # Verifica che tutte le variabili necessarie siano state estratte correttamente
+          if [ -z "$IMAGE_URL" ]; then
+            echo "ERRORE: URL dell'immagine non trovato!"
+          fi
+          
+          if [ -z "$TARGET_FILENAME" ]; then
+            echo "ERRORE: Nome del file target non trovato!"
+          fi
+          
+          # Salva i risultati in modo sicuro
+          echo "image_url=${IMAGE_URL}" >> "$GITHUB_OUTPUT"
+          echo "target_filename=${TARGET_FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "game_name=${GAME_NAME}" >> "$GITHUB_OUTPUT"
       
       - name: Download image
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
