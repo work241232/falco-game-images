@@ -74,7 +74,7 @@ jobs:
           IMAGE_URL=$(echo "$BODY" | grep -o 'Image URL: http[s]*://[^ ]*' | sed 's/Image URL: //')
           echo "Extracted image URL: $IMAGE_URL"
           
-          # Estrai nome del file evitando esecuzione di comandi
+          # Estrai nome del file in modo sicuro
           TARGET_FILENAME=$(echo "$BODY" | grep -o 'Target filename: `[^`]*`' | sed 's/Target filename: `//' | sed 's/`//')
           echo "Target filename from issue: $TARGET_FILENAME"
           
