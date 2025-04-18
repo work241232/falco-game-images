@@ -31,6 +31,8 @@ jobs:
       - name: Checkout repository
         id: checkout
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}  # Usa PAT_TOKEN se disponibile, altrimenti fallback su GITHUB_TOKEN
         continue-on-error: true
       
       - name: Check checkout
@@ -210,8 +212,12 @@ jobs:
           FILENAME="${{ steps.extract.outputs.target_filename }}"
           git add "images/$FILENAME"
           git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
-          git push
-          echo "success=true" >> "$GITHUB_OUTPUT"
+          
+          # Usa nuovo formato per gli output in GitHub Actions
+          echo "success=true" >> $GITHUB_OUTPUT
+          
+          # Push utilizzando il token di autenticazione
+          git push origin HEAD:main || git push
         continue-on-error: true
       
       - name: Report commit failure
