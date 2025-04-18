@@ -114,8 +114,17 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Debug git status
-          echo "Git status before add:"
+          # Imposta il token per authentication
+          # Nota: Utilizziamo una variabile temporanea per evitare problemi di escape
+          REPO_URL="https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}"
+          git remote set-url origin "$REPO_URL"
+          
+          # Prima di fare il commit, dobbiamo fare pull per incorporare eventuali modifiche remote
+          echo "Pulling latest changes from the repository..."
+          git pull origin main --rebase
+          
+          # Debug git status dopo pull
+          echo "Git status after pull:"
           git status
           
           # Aggiungi il file
@@ -132,21 +141,32 @@ jobs:
           echo "Latest commit:"
           git log -1
           
-          # Imposta il token per authentication
-          git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}"
-          
-          # Esegui il push con più informazioni di debug
+          # Esegui il push
           echo "Pushing changes..."
-          git push origin HEAD:main --verbose
+          git push origin HEAD:main
           
-          # Conferma che il push è andato a buon fine
-          if [ $? -eq 0 ]; then
+          # Verifica il risultato del push
+          PUSH_RESULT=$?
+          if [ $PUSH_RESULT -eq 0 ]; then
             echo "Push successful!"
             echo "success=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Push failed!"
-            exit 1
-          fi
+            echo "Push failed with error code: $PUSH_RESULT"
+            echo "Trying with force push as a fallback..."
+            
+            # Tenta un force push come fallback (da utilizzare con cautela)
+            git push origin HEAD:main --force
+            
+            # Verifica il risultato del force push
+            FORCE_PUSH_RESULT=$?
+            if [ $FORCE_PUSH_RESULT -eq 0 ]; then
+              echo "Force push successful!"
+              echo "success=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Force push also failed with error code: $FORCE_PUSH_RESULT"
+              echo "Please check repository permissions and token validity."
+              exit 1
+            fi
       
       - name: Comment on issue
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != '' && steps.download.outputs.success == 'true'
