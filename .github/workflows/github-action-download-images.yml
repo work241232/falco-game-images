@@ -2,12 +2,12 @@ name: Auto Download Game Images
 
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [opened, edited]
 
 jobs:
   download-image:
     runs-on: ubuntu-latest
-    if: contains(github.event.issue.labels.*.name, 'image-request') && !contains(github.event.issue.labels.*.name, 'completed')
+    if: github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'image-request') && !contains(github.event.issue.labels.*.name, 'completed')
     
     steps:
       - name: Checkout repository
@@ -64,50 +64,62 @@ jobs:
           echo "success=true" >> "$GITHUB_OUTPUT"
       
       - name: Commit and push changes
-        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != '' && steps.download.outputs.success == 'true'
         id: commit
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           FILENAME="${{ steps.extract.outputs.target_filename }}"
-          git add "images/$FILENAME" || echo "No changes to commit"
-          git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}" || echo "No changes to commit"
-          git push || echo "Nothing to push"
+          if [ -f "images/$FILENAME" ]; then
+            git add "images/$FILENAME"
+            if ! git diff --staged --quiet; then
+              git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}" 
+              git push
+              echo "Changes committed and pushed."
+            else
+              echo "No changes to commit."
+            fi
+          else
+             echo "Downloaded file images/$FILENAME not found. Skipping commit."
+          fi
           echo "success=true" >> "$GITHUB_OUTPUT"
       
-      - name: Comment on issue
-        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != '' && steps.download.outputs.success == 'true'
+      - name: Comment on issue and Close
+        if: steps.download.outputs.success == 'true' && steps.commit.outputs.success == 'true' && github.event.issue.state == 'open'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: '✅ Image has been automatically downloaded and added to the repository as `images/${{ steps.extract.outputs.target_filename }}`.'
             });
-            github.rest.issues.update({
+            const currentLabels = context.payload.issue.labels.map(l => l.name);
+            const newLabels = [...new Set([...currentLabels, 'automated', 'completed'])];
+            
+            await github.rest.issues.update({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'closed',
-              labels: ['image-request', 'automated', 'completed']
+              labels: newLabels
             });
       
       - name: Comment on error
-        if: failure() || (steps.extract.outputs.image_url == '') || (steps.extract.outputs.target_filename == '')
+        if: (failure() || steps.download.outputs.success != 'true' || steps.commit.outputs.success != 'true') && github.event.issue.state == 'open'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: '❌ Failed to automatically download and add the image. Manual intervention required.'
             });
-            github.rest.issues.addLabels({
+            await github.rest.issues.addLabels({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
