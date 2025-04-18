@@ -1,0 +1,102 @@
+name: Auto Download Game Images
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  download-image:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'image-request')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
+      
+      - name: Extract image information
+        id: extract
+        run: |
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          
+          # Estrai URL dell'immagine
+          IMAGE_URL=$(echo "$ISSUE_BODY" | grep -oP 'Image URL: \K(http[s]?:\/\/[^\s]+)' || echo "")
+          
+          # Estrai nome del file di destinazione
+          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: `\K([^`]+)' || echo "")
+          
+          # Se target filename non è stato trovato, estrai il nome del gioco e sanitizzalo
+          if [ -z "$TARGET_FILENAME" ]; then
+            GAME_NAME=$(echo "$ISSUE_BODY" | grep -oP 'Game: \K([^\n]+)' || echo "")
+            if [ -n "$GAME_NAME" ]; then
+              TARGET_FILENAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g').jpg
+            fi
+          fi
+          
+          echo "::set-output name=image_url::$IMAGE_URL"
+          echo "::set-output name=target_filename::$TARGET_FILENAME"
+          echo "::set-output name=game_name::$GAME_NAME"
+          
+          echo "Extracted image URL: $IMAGE_URL"
+          echo "Target filename: $TARGET_FILENAME"
+          echo "Game name: $GAME_NAME"
+      
+      - name: Download image
+        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+        run: |
+          mkdir -p images
+          curl -L "${{ steps.extract.outputs.image_url }}" -o "images/${{ steps.extract.outputs.target_filename }}"
+          echo "Image downloaded to images/${{ steps.extract.outputs.target_filename }}"
+          ls -la images/
+      
+      - name: Commit and push changes
+        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add images/${{ steps.extract.outputs.target_filename }}
+          git commit -m "Add image for ${{ steps.extract.outputs.game_name }}"
+          git push
+      
+      - name: Comment on issue
+        if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Image has been automatically downloaded and added to the repository as `images/${{ steps.extract.outputs.target_filename }}`.'
+            });
+            github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              labels: ['image-request', 'automated', 'completed']
+            });
+      
+      - name: Comment on error
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Failed to automatically download and add the image. Manual intervention required.'
+            });
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['needs-manual-intervention']
+            });

@@ -75,43 +75,60 @@ jobs:
           IMAGE_URL=$(echo "$ISSUE_BODY" | grep -oP 'Image URL: \K(http[s]?:\/\/[^\s]+)' || echo "")
           
           # Estrai nome del file di destinazione
-          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: \K([^\s]+)' || echo "")
-          # Rimuovi backtick se presente
-          TARGET_FILENAME=$(echo "$TARGET_FILENAME" | sed 's/`//g')
+          TARGET_FILENAME=$(echo "$ISSUE_BODY" | grep -oP 'Target filename: `\K([^`]+)' || echo "")
+          # Rimuovi backtick se è ancora presente
+          TARGET_FILENAME="${TARGET_FILENAME//\`/}"
           
           # Se target filename non è stato trovato, estrai il nome del gioco e sanitizzalo
           if [ -z "$TARGET_FILENAME" ]; then
             GAME_NAME=$(echo "$ISSUE_BODY" | grep -oP 'Game: \K([^\n]+)' || echo "")
             if [ -n "$GAME_NAME" ]; then
-              TARGET_FILENAME=$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g').jpg
+              TARGET_FILENAME="$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g').jpg"
             fi
           fi
           
-          echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
-          echo "target_filename=$TARGET_FILENAME" >> $GITHUB_OUTPUT
-          echo "game_name=$GAME_NAME" >> $GITHUB_OUTPUT
+          # Verifica che le variabili non siano vuote e gestiscile in modo sicuro
+          if [ -n "$IMAGE_URL" ]; then
+            echo "image_url=$IMAGE_URL" >> "$GITHUB_OUTPUT"
+            echo "Extracted image URL: $IMAGE_URL"
+          else
+            echo "image_url=" >> "$GITHUB_OUTPUT"
+            echo "No image URL found"
+          fi
           
-          echo "Extracted image URL: $IMAGE_URL"
-          echo "Target filename: $TARGET_FILENAME"
-          echo "Game name: $GAME_NAME"
+          if [ -n "$TARGET_FILENAME" ]; then
+            echo "target_filename=$TARGET_FILENAME" >> "$GITHUB_OUTPUT"
+            echo "Target filename: $TARGET_FILENAME"
+          else
+            echo "target_filename=" >> "$GITHUB_OUTPUT"
+            echo "No target filename found"
+          fi
+          
+          if [ -n "$GAME_NAME" ]; then
+            echo "game_name=$GAME_NAME" >> "$GITHUB_OUTPUT"
+            echo "Game name: $GAME_NAME"
+          else
+            echo "game_name=" >> "$GITHUB_OUTPUT"
+            echo "No game name found"
+          fi
       
       - name: Validate extraction
         if: steps.checkout.outcome == 'success'
         id: validate
         run: |
           if [ -z "${{ steps.extract.outputs.image_url }}" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "reason=No image URL found in issue body" >> $GITHUB_OUTPUT
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            echo "reason=No image URL found in issue body" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           
           if [ -z "${{ steps.extract.outputs.target_filename }}" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "reason=No target filename could be determined" >> $GITHUB_OUTPUT
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            echo "reason=No target filename could be determined" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           
-          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "valid=true" >> "$GITHUB_OUTPUT"
       
       - name: Report invalid extraction
         if: steps.checkout.outcome == 'success' && steps.validate.outputs.valid != 'true'
@@ -143,15 +160,19 @@ jobs:
         id: download
         run: |
           mkdir -p images
-          HTTP_CODE=$(curl -L "${{ steps.extract.outputs.image_url }}" -o "images/${{ steps.extract.outputs.target_filename }}" -w "%{http_code}")
-          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          FILENAME="${{ steps.extract.outputs.target_filename }}"
+          URL="${{ steps.extract.outputs.image_url }}"
+          
+          echo "Downloading image from $URL to images/$FILENAME"
+          HTTP_CODE=$(curl -L "$URL" -o "images/$FILENAME" -w "%{http_code}")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
           
           if [ "$HTTP_CODE" == "200" ]; then
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "Image downloaded to images/${{ steps.extract.outputs.target_filename }}"
+            echo "success=true" >> "$GITHUB_OUTPUT"
+            echo "Image downloaded to images/$FILENAME"
             ls -la images/
           else
-            echo "success=false" >> $GITHUB_OUTPUT
+            echo "success=false" >> "$GITHUB_OUTPUT"
             echo "Failed to download image, HTTP code: $HTTP_CODE"
           fi
       
@@ -186,10 +207,11 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add images/${{ steps.extract.outputs.target_filename }}
+          FILENAME="${{ steps.extract.outputs.target_filename }}"
+          git add "images/$FILENAME"
           git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
           git push
-          echo "success=true" >> $GITHUB_OUTPUT
+          echo "success=true" >> "$GITHUB_OUTPUT"
         continue-on-error: true
       
       - name: Report commit failure
