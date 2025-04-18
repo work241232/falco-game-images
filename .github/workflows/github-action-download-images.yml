@@ -95,16 +95,58 @@ jobs:
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != ''
         id: commit
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          # Verifica l'esistenza del file
           FILENAME="${{ steps.extract.outputs.target_filename }}"
-          git add "images/$FILENAME" || echo "No changes to commit"
-          git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}" || echo "No changes to commit"
+          echo "Verifying file images/$FILENAME exists..."
+          if [ -f "images/$FILENAME" ]; then
+            echo "File exists, proceeding with commit."
+            ls -la images/
+          else
+            echo "ERROR: File does not exist! Cannot commit."
+            echo "Current directory content:"
+            ls -la
+            echo "Images directory content:"
+            ls -la images/ || echo "Images directory not found!"
+            exit 1
+          fi
           
-          # Utilizzo di un token di deploy con permessi di scrittura
-          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}
-          git push || echo "Nothing to push"
-          echo "success=true" >> "$GITHUB_OUTPUT"
+          # Configura git
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Debug git status
+          echo "Git status before add:"
+          git status
+          
+          # Aggiungi il file
+          git add "images/$FILENAME"
+          
+          # Debug git status dopo add
+          echo "Git status after add:"
+          git status
+          
+          # Esegui il commit
+          git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
+          
+          # Debug del commit
+          echo "Latest commit:"
+          git log -1
+          
+          # Imposta il token per authentication
+          git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}"
+          
+          # Esegui il push con più informazioni di debug
+          echo "Pushing changes..."
+          git push origin HEAD:main --verbose
+          
+          # Conferma che il push è andato a buon fine
+          if [ $? -eq 0 ]; then
+            echo "Push successful!"
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Push failed!"
+            exit 1
+          fi
       
       - name: Comment on issue
         if: steps.extract.outputs.image_url != '' && steps.extract.outputs.target_filename != '' && steps.download.outputs.success == 'true'
