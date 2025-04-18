@@ -78,7 +78,8 @@ jobs:
           if [ -f "images/$FILENAME" ]; then
             git add "images/$FILENAME"
             if ! git diff --staged --quiet; then
-              git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}" 
+              git commit -m "Add image for ${{ steps.extract.outputs.game_name || steps.extract.outputs.target_filename }}"
+              git pull # Pull latest changes before pushing
               git push
               echo "Changes committed and pushed."
             else
